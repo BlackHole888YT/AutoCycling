@@ -1,0 +1,19 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "org.blackhole.autocycling.mixin",
+  "compatibilityLevel": "JAVA_8",
+  "refmap": "autocycling.refmap.json",
+  "mixins": [
+    "MerchantScreenMixin"
+  ],
+  "client": [
+
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}
