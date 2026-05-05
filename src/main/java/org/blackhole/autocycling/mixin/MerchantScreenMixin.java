@@ -17,12 +17,13 @@ import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.EnchantmentHelper;
 import net.minecraft.world.item.trading.MerchantOffer;
 import net.minecraftforge.registries.ForgeRegistries;
+import org.blackhole.AutoCycling;
+import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import java.util.Map;
 
@@ -31,8 +32,13 @@ public abstract class MerchantScreenMixin extends AbstractContainerScreen<Mercha
 
     @Unique public EditBox autoCycling$idInput;
     @Unique public EditBox autoCycling$lvlInput;
+    @Unique private Button autoCycling$toggleButton;
     @Unique private boolean autoCycling$isSearching = false;
     @Unique private int autoCycling$tickDelay = 0;
+    @Unique private boolean autoCycling$tradeLocked = false;
+    @Unique private int autoCycling$baseTraderXp = 0;
+    @Unique private int autoCycling$baseTraderLevel = 0;
+    @Unique private boolean autoCycling$baselineReady = false;
 
     public MerchantScreenMixin(MerchantMenu menu, Inventory inv, Component title) {
         super(menu, inv, title);
@@ -51,7 +57,18 @@ public abstract class MerchantScreenMixin extends AbstractContainerScreen<Mercha
         autoCycling$lvlInput.setValue("1");
         this.addRenderableWidget(autoCycling$lvlInput);
 
-        this.addRenderableWidget(Button.builder(Component.literal("Auto"), (btn) -> {
+        autoCycling$baseTraderXp = 0;
+        autoCycling$baseTraderLevel = 0;
+        autoCycling$tradeLocked = false;
+        autoCycling$baselineReady = false;
+
+        autoCycling$toggleButton = this.addRenderableWidget(Button.builder(Component.literal("Auto"), (btn) -> {
+            autoCycling$updateTradeLock();
+            if (autoCycling$tradeLocked) {
+                autoCycling$isSearching = false;
+                btn.setMessage(Component.literal("§aAuto"));
+                return;
+            }
             autoCycling$isSearching = !autoCycling$isSearching;
             btn.setMessage(Component.literal(autoCycling$isSearching ? "§cSTOP" : "§aAuto"));
         }).bounds(x + 140, y - 22, 40, 16).build());
@@ -59,12 +76,27 @@ public abstract class MerchantScreenMixin extends AbstractContainerScreen<Mercha
 
     @Inject(method = "render", at = @At("HEAD"))
     private void autoCycling$onRender(net.minecraft.client.gui.GuiGraphics graphics, int mouseX, int mouseY, float partialTick, CallbackInfo ci) {
+        autoCycling$updateTradeLock();
+        if (autoCycling$tradeLocked) {
+            graphics.drawString(this.font, "§cLOCKED: traded before", this.leftPos + 20, this.topPos - 34, 0xFFFFFF, false);
+        }
         if (autoCycling$isSearching) {
+            if (autoCycling$tradeLocked) {
+                autoCycling$isSearching = false;
+                autoCycling$tickDelay = 0;
+                if (autoCycling$toggleButton != null) {
+                    autoCycling$toggleButton.setMessage(Component.literal("§aAuto"));
+                }
+                return;
+            }
             autoCycling$tickDelay++;
-            if (autoCycling$tickDelay >= 8) {
+            if (autoCycling$tickDelay >= AutoCycling.getAutoTraderSpeed()) {
                 autoCycling$tickDelay = 0;
                 if (autoCycling$checkTrade()) {
                     autoCycling$isSearching = false;
+                    if (autoCycling$toggleButton != null) {
+                        autoCycling$toggleButton.setMessage(Component.literal("§aAuto"));
+                    }
                     Minecraft.getInstance().player.playSound(net.minecraft.sounds.SoundEvents.PLAYER_LEVELUP, 1.0F, 1.0F);
                 } else {
                     if (Main.SIMPLE_CHANNEL != null) {
@@ -96,5 +128,84 @@ public abstract class MerchantScreenMixin extends AbstractContainerScreen<Mercha
             }
         }
         return false;
+    }
+
+    @Unique
+    private boolean autoCycling$hasUsedTrade() {
+        for (MerchantOffer offer : this.menu.getOffers()) {
+            if (offer.getUses() > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Unique
+    private void autoCycling$updateTradeLock() {
+        if (autoCycling$tradeLocked) {
+            return;
+        }
+
+        if (!autoCycling$baselineReady && !this.menu.getOffers().isEmpty()) {
+            autoCycling$baseTraderXp = this.menu.getTraderXp();
+            autoCycling$baseTraderLevel = this.menu.getTraderLevel();
+            autoCycling$baselineReady = true;
+
+            // If villager already has progression, treat it as previously traded and block auto-cycling.
+            if (autoCycling$baseTraderXp > 0 || autoCycling$baseTraderLevel > 1) {
+                autoCycling$tradeLocked = true;
+                return;
+            }
+        }
+
+        if (autoCycling$hasUsedTrade()) {
+            autoCycling$tradeLocked = true;
+            return;
+        }
+
+        if (autoCycling$baselineReady
+                && (this.menu.getTraderXp() > autoCycling$baseTraderXp
+                || this.menu.getTraderLevel() > autoCycling$baseTraderLevel)) {
+            autoCycling$tradeLocked = true;
+        }
+    }
+
+    @Unique
+    private boolean autoCycling$isInputFocused() {
+        return (autoCycling$idInput != null && autoCycling$idInput.isFocused())
+                || (autoCycling$lvlInput != null && autoCycling$lvlInput.isFocused());
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (!autoCycling$isInputFocused()) {
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        // Allow closing screen with Escape, but swallow all other hotkeys while typing.
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            return super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        if ((autoCycling$idInput != null && autoCycling$idInput.keyPressed(keyCode, scanCode, modifiers))
+                || (autoCycling$lvlInput != null && autoCycling$lvlInput.keyPressed(keyCode, scanCode, modifiers))) {
+            return true;
+        }
+
+        return true;
+    }
+
+    @Override
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (!autoCycling$isInputFocused()) {
+            return super.charTyped(codePoint, modifiers);
+        }
+
+        if ((autoCycling$idInput != null && autoCycling$idInput.charTyped(codePoint, modifiers))
+                || (autoCycling$lvlInput != null && autoCycling$lvlInput.charTyped(codePoint, modifiers))) {
+            return true;
+        }
+
+        return true;
     }
 }
